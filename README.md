@@ -69,11 +69,3 @@ Contributions are welcome! If you'd like to contribute:
 ## License
 This project is licensed under the MIT License. See `LICENSE` for details.
 
-## Contact
-For any questions or issues, feel free to reach out:
-- **GitHub Issues:** [Open an issue](https://github.com/MichaelPresson/oneBadApple/issues)
-- **Email:** [Your Email Here]
-
----
-Enjoy coding! 🚀
-
