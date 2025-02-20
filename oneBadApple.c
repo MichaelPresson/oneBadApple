@@ -38,7 +38,8 @@ int main() {
                         // child process
                         int apple;
                         char message[100];
-
+			int destination;
+			
                         // close unused pipe ends
                         close(pipes[i][1]); // close write end of the previous pipe
                         close(pipes[(i + 1) % k][0]);
@@ -48,12 +49,25 @@ int main() {
 
                         if (apple == 1) {
   				printf("Process %d (PID: %d) has the apple and received message: %s\n", i, getpid(), message);
-                        }
-                        ///////////////////////////////
+                        
+				// set message to empty
+				message[0] = '\0';
+			}
+			
+			// pass the apple, dest, and message to next node
+			write(pipes[(i + 1) % k][1], &apple, sizeof(int));
+			write(pipes[(i + 1) % k][1], &destination, sizeof(int));
+			write(pipes[(i + 1) % k][1], &message, sizeof(message));
 
+			//close pipes to prevent issues
+			close(pipes[i][0]);
+			close(pipes[(i + 1) % k][1]);
+
+			exit(0);
+                        
                 } else {
                         // parent process
-                        printf("Parent process (PID: %d) created child %d (PID: %d)\n", getpid(), i + 1, pid);
+			printf("Parent process (PID: %d) created child %d (PID: %d)\n", getpid(), i + 1, pid);
 
                 }
 
