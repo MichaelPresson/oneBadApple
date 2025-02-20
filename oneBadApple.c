@@ -4,83 +4,142 @@
 #include <sys/wait.h>
 #include <string.h>
 
+#define MAX_MESSAGE_LENGTH 100
+
 int main() {
+    int k;
+    pid_t pid;
 
-        int k;
-        pid_t pid;
+    // Capture number of processes
+    printf("Enter number of processes: \n");
+    fflush(stdout);
+    if (scanf("%d", &k) != 1 || k < 1) {
+        fprintf(stderr, "Invalid input! Please enter a positive integer.\n");
+        return 1;
+    }
+    printf("# of processes to spawn: %d\n", k);
 
-
-        printf("Enter number of processes: \n");
-        fflush(stdout);
-        if (scanf("%d", &k) != 1 || k < 1) {
-                fprintf(stderr, "Invalid input! Please enter a positive integer.\n");
-                return 1;
+    // Create k pipes for the ring
+    int pipes[k][2];
+    for (int i = 0; i < k; ++i) {
+        if (pipe(pipes[i]) == -1) {
+            perror("pipe failed");
+            exit(1);
         }
-        printf("# of processes to spawn: %d\n", k);
+        printf("Created pipe: Node %d -> Node %d\n", i, (i + 1) % k);
+    }
 
-        int pipes[k][2]; // create k pipes (each with read/write ends)
+    // Spawn k-1 children (parent is Node 0)
+    for (int i = 1; i < k; ++i) { // Start at 1 since parent is 0
+        pid = fork();
+        if (pid < 0) {
+            perror("fork");
+            exit(1);
+        } else if (pid == 0) { // Child process
+            int nodeId = i;
+            int hasApple = 0;
+            int destination = 0;
+            char message[MAX_MESSAGE_LENGTH];
 
-        for (int i = 0; i < k; ++i) {
-                if (pipe(pipes[i]) == -1) {
-                        perror("pipe failed");
-                        exit(1);
-                }
-        }
+            // Close unused pipe ends
+            for (int j = 0; j < k; j++) {
+                if (j != (nodeId - 1)) close(pipes[j][0]); // Keep read from previous
+                if (j != nodeId) close(pipes[j][1]);       // Keep write to next
+            }
+            printf("Node %d (PID: %d): Created\n", nodeId, getpid());
 
-        for (int i = 0; i < k; ++i) {
-                pid = fork();
+            // Contribution 1: Persistent ring with apple sync
+            while (1) {
+                if (hasApple) {
+                    read(pipes[nodeId - 1][0], &destination, sizeof(int));
+                    read(pipes[nodeId - 1][0], message, MAX_MESSAGE_LENGTH);
+                    printf("Node %d (PID: %d): Received apple with message '%s' for Node %d\n",
+                           nodeId, getpid(), message, destination);
 
+                    if (destination == nodeId) {
+                        printf("Node %d: Message '%s' is for me! Clearing it.\n", nodeId, message);
+                        strcpy(message, "empty");
+                        destination = 0;
+                    } else {
+                        printf("Node %d: Forwarding '%s' to Node %d\n", nodeId, message, destination);
+                    }
 
-                if (pid < 0) {
-                        perror("fork");
-                        exit(1);
-                } else if (pid == 0) {
-                        // child process
-                        int apple;
-                        char message[100];
-			int destination;
-			
-                        // close unused pipe ends
-                        close(pipes[i][1]); // close write end of the previous pipe
-                        close(pipes[(i + 1) % k][0]);
-
-                        read(pipes[i][0], &apple, sizeof(int)); // read apple
-                        read(pipes[i][0], message, sizeof(message)); // read message
-
-                        if (apple == 1) {
-  				printf("Process %d (PID: %d) has the apple and received message: %s\n", i, getpid(), message);
-                        
-				// set message to empty
-				message[0] = '\0';
-			}
-			
-			// pass the apple, dest, and message to next node
-			write(pipes[(i + 1) % k][1], &apple, sizeof(int));
-			write(pipes[(i + 1) % k][1], &destination, sizeof(int));
-			write(pipes[(i + 1) % k][1], &message, sizeof(message));
-
-			//close pipes to prevent issues
-			close(pipes[i][0]);
-			close(pipes[(i + 1) % k][1]);
-
-			exit(0);
-                        
+                    // Pass apple and message to next node
+                    int nextNode = (nodeId + 1) % k;
+                    write(pipes[nodeId][1], &hasApple, sizeof(int)); // Pass apple
+                    write(pipes[nodeId][1], &destination, sizeof(int));
+                    write(pipes[nodeId][1], message, MAX_MESSAGE_LENGTH);
+                    printf("Node %d: Passed apple to Node %d\n", nodeId, nextNode);
+                    hasApple = 0;
                 } else {
-                        // parent process
-			printf("Parent process (PID: %d) created child %d (PID: %d)\n", getpid(), i + 1, pid);
-
+                    int appleReceived;
+                    read(pipes[nodeId - 1][0], &appleReceived, sizeof(int));
+                    if (appleReceived) {
+                        read(pipes[nodeId - 1][0], &destination, sizeof(int));
+                        read(pipes[nodeId - 1][0], message, MAX_MESSAGE_LENGTH);
+                        printf("Node %d (PID: %d): Got apple with '%s' for Node %d\n",
+                               nodeId, getpid(), message, destination);
+                        hasApple = 1;
+                    }
                 }
-
+            }
+            exit(0); // Unreachable due to loop
+        } else { // Parent
+            printf("Parent (Node 0, PID: %d): Created Node %d (PID: %d)\n", getpid(), i, pid);
         }
-        // parent waits for all child processes to finish
-        for (int i = 0; i < k; ++i) {
-                wait(NULL);
+    }
+
+    // Parent (Node 0) logic
+    int hasApple = 1; // Node 0 starts with apple
+    int destination = 0;
+    char message[MAX_MESSAGE_LENGTH];
+
+    // Close unused pipe ends in parent
+    for (int j = 0; j < k; j++) {
+        if (j != (k - 1)) close(pipes[j][0]); // Keep read from k-1
+        if (j != 0) close(pipes[j][1]);       // Keep write to 1
+    }
+    printf("Node 0 (PID: %d): Ready\n", getpid());
+
+    // Contribution 2: Parent message input and forwarding
+    while (1) {
+        if (hasApple) {
+            char inputMessage[MAX_MESSAGE_LENGTH];
+            if (destination == 0) { // Only prompt if no message is in transit
+                printf("Node 0: Enter message to send: ");
+                fgets(inputMessage, MAX_MESSAGE_LENGTH, stdin); // Multi-word support
+                inputMessage[strcspn(inputMessage, "\n")] = 0;  // Remove newline
+                printf("Node 0: Enter destination node (0 to %d): ", k - 1);
+                scanf("%d", &destination);
+                getchar(); // Clear newline
+                strncpy(message, inputMessage, MAX_MESSAGE_LENGTH);
+                printf("Node 0: Sending '%s' to Node %d\n", message, destination);
+            } else {
+                printf("Node 0: Apple returned with '%s' for Node %d\n", message, destination);
+            }
+
+            // Pass apple and message to Node 1
+            write(pipes[0][1], &hasApple, sizeof(int));
+            write(pipes[0][1], &destination, sizeof(int));
+            write(pipes[0][1], message, MAX_MESSAGE_LENGTH);
+            printf("Node 0: Passed apple to Node 1\n");
+            hasApple = 0;
+        } else {
+            int appleReceived;
+            read(pipes[k - 1][0], &appleReceived, sizeof(int));
+            if (appleReceived) {
+                read(pipes[k - 1][0], &destination, sizeof(int));
+                read(pipes[k - 1][0], message, MAX_MESSAGE_LENGTH);
+                printf("Node 0 (PID: %d): Got apple with '%s' for Node %d\n",
+                       getpid(), message, destination);
+                if (destination == 0) {
+                    strcpy(message, "empty"); // Clear if delivered to Node 0
+                }
+                hasApple = 1;
+            }
         }
+    }
 
-        printf("Process (PID: %d) finished\n", getpid());
-
-
-        return 0;
-
-
+    // Parent waits (not needed due to infinite loop)
+    return 0;
 }
