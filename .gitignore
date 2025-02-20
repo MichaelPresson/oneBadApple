@@ -1,0 +1,36 @@
+# VS Code
+.vscode/
+!.vscode/settings.json  # Keep project-specific settings if desired
+!.vscode/tasks.json     # Keep custom tasks if needed
+!.vscode/launch.json    # Keep launch configurations if needed
+*.code-workspace
+
+# JetBrains IDEs (IntelliJ, PyCharm, etc.)
+.idea/
+!.idea/vcs.xml          # Keep VCS settings if shared
+!.idea/runConfigurations/  # Keep run configurations if shared
+*.iml
+
+# Compiled output and build files
+*.o
+*.out
+*.exe
+bin/
+obj/
+
+# Dependency directories
+node_modules/
+vendor/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+
+# OS-specific files
+.DS_Store  # macOS
+Thumbs.db  # Windows
+
+# Miscellaneous
+*.bak
+*.cache
