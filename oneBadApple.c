@@ -3,145 +3,212 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <string.h>
+#include <signal.h>
 
 #define MAX_MESSAGE_LENGTH 100
 
+// Global variables for shutdown
+volatile sig_atomic_t keepRunning = 1;
+
+void signalHandler(int sig) {
+    keepRunning = 0; // Gracefully stop on Ctrl+C
+}
+
 int main() {
-    int k;
+    int numNodes;
     pid_t pid;
 
-    // Capture number of processes
+    // Set up signal handler for Ctrl+C
+    signal(SIGINT, signalHandler);
+
+    // Get number of processes from user
     printf("Enter number of processes: \n");
     fflush(stdout);
-    if (scanf("%d", &k) != 1 || k < 1) {
+    if (scanf("%d", &numNodes) != 1 || numNodes < 1) {
         fprintf(stderr, "Invalid input! Please enter a positive integer.\n");
         return 1;
     }
-    printf("# of processes to spawn: %d\n", k);
+    while (getchar() != '\n' && getchar() != EOF); // Clear input buffer
+    printf("Number of processes to spawn: %d\n", numNodes);
 
-    // Create k pipes for the ring
-    printf("Creating pipes...\n");
-    int pipes[k][2];
-    for (int i = 0; i < k; ++i) {
+    // Create pipes for the ring
+    printf("Creating pipes for %d nodes...\n", numNodes);
+    int pipes[numNodes][2];
+    for (int i = 0; i < numNodes; i++) {
         if (pipe(pipes[i]) == -1) {
-            perror("pipe failed");
+            perror("Pipe creation failed");
             exit(1);
         }
-        printf("Created pipe: Node %d -> Node %d\n", i, (i + 1) % k);
+        printf("Created pipe: Node %d -> Node %d\n", i, (i + 1) % numNodes);
     }
 
-    // Spawn k-1 children (parent is Node 0)
-    for (int i = 1; i < k; ++i) { // Start at 1 since parent is 0
+    // Spawn child processes (parent is Node 0)
+    pid_t childPids[numNodes - 1]; // Store child PIDs for shutdown
+    for (int i = 1; i < numNodes; i++) {
         pid = fork();
         if (pid < 0) {
-            perror("fork");
+            perror("Fork failed");
             exit(1);
         } else if (pid == 0) { // Child process
             int nodeId = i;
             int hasApple = 0;
-            int destination = 0;
+            int destinationNode = 0;
             char message[MAX_MESSAGE_LENGTH];
 
             // Close unused pipe ends
-            for (int j = 0; j < k; j++) {
+            for (int j = 0; j < numNodes; j++) {
                 if (j != (nodeId - 1)) close(pipes[j][0]); // Keep read from previous
                 if (j != nodeId) close(pipes[j][1]);       // Keep write to next
             }
-            printf("Node %d (PID: %d): Created\n", nodeId, getpid());
 
-            // Contribution 1: Persistent ring with apple sync
-            while (1) {
+            printf("\nNode %d (PID: %d): Created\n", nodeId, getpid());
+
+            // Child node logic
+            while (keepRunning) {
                 if (hasApple) {
-                    read(pipes[nodeId - 1][0], &destination, sizeof(int));
-                    read(pipes[nodeId - 1][0], message, MAX_MESSAGE_LENGTH);
-                    printf("Node %d (PID: %d): Received apple with message '%s' for Node %d\n",
-                           nodeId, getpid(), message, destination);
-
-                    if (destination == nodeId) {
-                        printf("Node %d: Message '%s' is for me! Clearing it.\n", nodeId, message);
+                    printf("Node %d: Has apple, checking message\n", nodeId);
+                    if (destinationNode == nodeId) {
+                        printf("Node %d: Message '%s' delivered to me, clearing\n", nodeId, message);
                         strcpy(message, "empty");
-                        destination = 0;
+                        destinationNode = 0;
                     } else {
-                        printf("Node %d: Forwarding '%s' to Node %d\n", nodeId, message, destination);
+                        printf("Node %d: Forwarding '%s' to Node %d\n", nodeId, message, destinationNode);
                     }
 
-                    // Pass apple and message to next node
-                    int nextNode = (nodeId + 1) % k;
-                    write(pipes[nodeId][1], &hasApple, sizeof(int)); // Pass apple
-                    write(pipes[nodeId][1], &destination, sizeof(int));
-                    write(pipes[nodeId][1], message, MAX_MESSAGE_LENGTH);
+                    // Pass apple to next node
+                    int nextNode = (nodeId + 1) % numNodes;
+                    int appleFlag = 1;
+                    if (write(pipes[nodeId][1], &appleFlag, sizeof(int)) == -1 ||
+                        write(pipes[nodeId][1], &destinationNode, sizeof(int)) == -1 ||
+                        write(pipes[nodeId][1], message, MAX_MESSAGE_LENGTH) == -1) {
+                        perror("Node write failed");
+                        exit(1);
+                    }
                     printf("Node %d: Passed apple to Node %d\n", nodeId, nextNode);
                     hasApple = 0;
                 } else {
                     int appleReceived;
-                    read(pipes[nodeId - 1][0], &appleReceived, sizeof(int));
+                    ssize_t bytesRead = read(pipes[nodeId - 1][0], &appleReceived, sizeof(int));
+                    if (bytesRead == -1) {
+                        perror("Node read failed");
+                        exit(1);
+                    }
+                    if (bytesRead == 0) {
+                        continue; // No data yet, keep looping
+                    }
                     if (appleReceived) {
-                        read(pipes[nodeId - 1][0], &destination, sizeof(int));
-                        read(pipes[nodeId - 1][0], message, MAX_MESSAGE_LENGTH);
-                        printf("Node %d (PID: %d): Got apple with '%s' for Node %d\n",
-                               nodeId, getpid(), message, destination);
+                        if (read(pipes[nodeId - 1][0], &destinationNode, sizeof(int)) == -1 ||
+                            read(pipes[nodeId - 1][0], message, MAX_MESSAGE_LENGTH) == -1) {
+                            perror("Node read failed");
+                            exit(1);
+                        }
+                        printf("Node %d (PID: %d): Received apple with '%s' for Node %d\n",
+                               nodeId, getpid(), message, destinationNode);
                         hasApple = 1;
                     }
                 }
             }
-            exit(0); // Unreachable due to loop
+            printf("Node %d (PID: %d): Shutting down\n", nodeId, getpid());
+            close(pipes[nodeId - 1][0]);
+            close(pipes[nodeId][1]);
+            exit(0);
         } else { // Parent
-            printf("Parent (Node 0, PID: %d): Created Node %d (PID: %d)\n", getpid(), i, pid);
+            childPids[i - 1] = pid;
+            printf("Node 0 (PID: %d): Spawned Node %d (PID: %d)\n", getpid(), i, pid);
         }
     }
 
     // Parent (Node 0) logic
     int hasApple = 1; // Node 0 starts with apple
-    int destination = 0;
-    char message[MAX_MESSAGE_LENGTH];
+    int destinationNode = 0;
+    char message[MAX_MESSAGE_LENGTH] = "empty";
 
     // Close unused pipe ends in parent
-    for (int j = 0; j < k; j++) {
-        if (j != (k - 1)) close(pipes[j][0]); // Keep read from k-1
-        if (j != 0) close(pipes[j][1]);       // Keep write to 1
+    for (int j = 0; j < numNodes; j++) {
+        if (j != (numNodes - 1)) close(pipes[j][0]); // Keep read from last node
+        if (j != 0) close(pipes[j][1]);              // Keep write to Node 1
     }
     printf("Node 0 (PID: %d): Ready\n", getpid());
 
-    // Contribution 2: Parent message input and forwarding
-    while (1) {
+    // Parent loop
+    while (keepRunning) {
         if (hasApple) {
             char inputMessage[MAX_MESSAGE_LENGTH];
-            if (destination == 0) { // Only prompt if no message is in transit
+            if (destinationNode == 0) { // Idle, prompt user
                 printf("Node 0: Enter message to send: ");
-                fgets(inputMessage, MAX_MESSAGE_LENGTH, stdin); // Multi-word support
-                inputMessage[strcspn(inputMessage, "\n")] = 0;  // Remove newline
-                printf("\nNode 0: Enter destination node (0 to %d): ", k - 1);
-                scanf("%d", &destination);
-                getchar(); // Clear newline
+                fflush(stdout);
+                if (fgets(inputMessage, MAX_MESSAGE_LENGTH, stdin) == NULL) {
+                    if (!keepRunning) break; // Ctrl+C detected
+                    perror("Input error");
+                    continue;
+                }
+                inputMessage[strcspn(inputMessage, "\n")] = '\0';
+
+                printf("Node 0: Enter destination node (0 to %d): ", numNodes - 1);
+                fflush(stdout);
+                if (scanf("%d", &destinationNode) != 1 || destinationNode < 0 || destinationNode >= numNodes) {
+                    printf("Node 0: Invalid destination, must be 0 to %d\n", numNodes - 1);
+                    while (getchar() != '\n' && getchar() != EOF);
+                    destinationNode = 0;
+                    continue;
+                }
+                while (getchar() != '\n' && getchar() != EOF);
+
                 strncpy(message, inputMessage, MAX_MESSAGE_LENGTH);
-                printf("Node 0: Sending '%s' to Node %d\n", message, destination);
+                message[MAX_MESSAGE_LENGTH - 1] = '\0';
+                printf("Node 0: Sending '%s' to Node %d\n", message, destinationNode);
             } else {
-                printf("Node 0: Apple returned with '%s' for Node %d\n", message, destination);
+                printf("Node 0: Apple returned with '%s' for Node %d\n", message, destinationNode);
             }
 
-            // Pass apple and message to Node 1
-            write(pipes[0][1], &hasApple, sizeof(int));
-            write(pipes[0][1], &destination, sizeof(int));
-            write(pipes[0][1], message, MAX_MESSAGE_LENGTH);
+            // Pass apple to Node 1
+            int appleFlag = 1;
+            if (write(pipes[0][1], &appleFlag, sizeof(int)) == -1 ||
+                write(pipes[0][1], &destinationNode, sizeof(int)) == -1 ||
+                write(pipes[0][1], message, MAX_MESSAGE_LENGTH) == -1) {
+                perror("Node 0 write failed");
+                break;
+            }
             printf("Node 0: Passed apple to Node 1\n");
             hasApple = 0;
         } else {
             int appleReceived;
-            read(pipes[k - 1][0], &appleReceived, sizeof(int));
-
+            ssize_t bytesRead = read(pipes[numNodes - 1][0], &appleReceived, sizeof(int));
+            if (bytesRead == -1) {
+                perror("Node 0 read failed");
+                break;
+            }
+            if (bytesRead == 0) {
+                continue; // No data yet
+            }
             if (appleReceived) {
-                read(pipes[k - 1][0], &destination, sizeof(int));
-                read(pipes[k - 1][0], message, MAX_MESSAGE_LENGTH);
-                printf("Node 0 (PID: %d): Got apple with '%s' for Node %d\n",
-                       getpid(), message, destination);
-                if (destination == 0) {
-                    strcpy(message, "empty"); // Clear if delivered to Node 0
+                if (read(pipes[numNodes - 1][0], &destinationNode, sizeof(int)) == -1 ||
+                    read(pipes[numNodes - 1][0], message, MAX_MESSAGE_LENGTH) == -1) {
+                    perror("Node 0 read failed");
+                    break;
+                }
+                printf("Node 0 (PID: %d): Received apple with '%s' for Node %d\n",
+                       getpid(), message, destinationNode);
+                if (destinationNode == 0) {
+                    printf("Node 0: Message delivered, clearing\n");
+                    strcpy(message, "empty");
+                    destinationNode = 0;
                 }
                 hasApple = 1;
             }
         }
     }
 
-    // Parent waits (not needed due to infinite loop)
+    // Shutdown: Signal children and clean up
+    printf("Node 0: Received Ctrl+C, shutting down...\n");
+    for (int i = 0; i < numNodes - 1; i++) {
+        kill(childPids[i], SIGINT);
+    }
+    for (int i = 0; i < numNodes - 1; i++) {
+        wait(NULL); // Wait for children to exit
+    }
+    printf("Node 0: All nodes terminated\n");
+    close(pipes[numNodes - 1][0]);
+    close(pipes[0][1]);
     return 0;
 }
