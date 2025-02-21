@@ -20,6 +20,7 @@ int main() {
     printf("# of processes to spawn: %d\n", k);
 
     // Create k pipes for the ring
+    printf("Creating pipes...\n");
     int pipes[k][2];
     for (int i = 0; i < k; ++i) {
         if (pipe(pipes[i]) == -1) {
@@ -109,7 +110,7 @@ int main() {
                 printf("Node 0: Enter message to send: ");
                 fgets(inputMessage, MAX_MESSAGE_LENGTH, stdin); // Multi-word support
                 inputMessage[strcspn(inputMessage, "\n")] = 0;  // Remove newline
-                printf("Node 0: Enter destination node (0 to %d): ", k - 1);
+                printf("\nNode 0: Enter destination node (0 to %d): ", k - 1);
                 scanf("%d", &destination);
                 getchar(); // Clear newline
                 strncpy(message, inputMessage, MAX_MESSAGE_LENGTH);
@@ -127,6 +128,7 @@ int main() {
         } else {
             int appleReceived;
             read(pipes[k - 1][0], &appleReceived, sizeof(int));
+
             if (appleReceived) {
                 read(pipes[k - 1][0], &destination, sizeof(int));
                 read(pipes[k - 1][0], message, MAX_MESSAGE_LENGTH);
